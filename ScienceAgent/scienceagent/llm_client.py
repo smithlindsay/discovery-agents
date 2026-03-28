@@ -1,0 +1,200 @@
+"""
+Unified LLM client supporting Anthropic and OpenAI-compatible providers.
+
+Provider routing is done by model string prefix:
+  "claude-*"            → Anthropic SDK  (ANTHROPIC_API_KEY)
+  "openrouter/*"        → OpenRouter API via requests (OPENROUTER_API_KEY)
+  "groq/*"              → Groq API, model name passed as-is after stripping "groq/"
+                          (OPENAI_API_KEY, base_url=https://api.groq.com/openai/v1)
+  "gpt-*", "o1-*"      → OpenAI SDK     (OPENAI_API_KEY)
+  "openai/*"            → OpenAI SDK with default base_url
+  "ollama/*"            → OpenAI-compatible, base_url=http://localhost:11434/v1
+  "hf/*"                → HuggingFace Inference, base_url=https://api-inference.huggingface.co/v1
+                          (HF_API_KEY)
+  Any other string      → OpenAI-compatible; set base_url via OPENAI_BASE_URL env var
+"""
+
+import os
+import json
+import requests
+from typing import Optional
+
+
+def complete(
+    model: str,
+    messages: list[dict],
+    system: Optional[str] = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.8,
+) -> str:
+    """
+    Send a chat completion request and return the assistant message text.
+
+    Args:
+        model: Model identifier string (see module docstring for routing).
+        messages: List of {"role": "user"|"assistant", "content": str} dicts.
+            Do NOT include a system message here; pass it via `system` instead.
+        system: System prompt string (handled natively by Anthropic; prepended
+            as a system message for OpenAI-compatible providers).
+        max_tokens: Maximum tokens in the response.
+        temperature: Sampling temperature.
+
+    Returns:
+        The assistant's reply as a plain string.
+    """
+    if _is_anthropic(model):
+        return _anthropic_complete(model, messages, system, max_tokens, temperature)
+    elif model.startswith("openrouter/"):
+        return _openrouter_complete(model[len("openrouter/"):], messages, system, max_tokens, temperature)
+    elif model.startswith("groq/"):
+        return _groq_complete(model[len("groq/"):], messages, system, max_tokens, temperature)
+    else:
+        return _openai_complete(model, messages, system, max_tokens, temperature)
+
+
+# ── Routing ──────────────────────────────────────────────────────────────────
+
+def _is_anthropic(model: str) -> bool:
+    return model.startswith("claude")
+
+
+# ── Anthropic ─────────────────────────────────────────────────────────────────
+
+def _anthropic_complete(model, messages, system, max_tokens, temperature):
+    try:
+        import anthropic
+    except ImportError:
+        raise ImportError("pip install anthropic")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    kwargs = dict(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        messages=messages,
+    )
+    if system:
+        kwargs["system"] = system
+
+    response = client.messages.create(**kwargs)
+    return response.content[0].text
+
+
+# ── OpenRouter (direct requests, no OpenAI SDK) ───────────────────────────────
+
+def _openrouter_complete(model, messages, system, max_tokens, temperature):
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise EnvironmentError("OPENROUTER_API_KEY not set")
+
+    full_messages = []
+    if system:
+        full_messages.append({"role": "system", "content": system})
+    full_messages.extend(messages)
+
+    response = requests.post(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": full_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        },
+    )
+    if not response.ok:
+        raise RuntimeError(f"OpenRouter error {response.status_code}: {response.text}")
+    body = response.json()
+    if "choices" not in body:
+        raise RuntimeError(f"OpenRouter unexpected response: {body}")
+    message = body["choices"][0]["message"]
+    content = message.get("content") or message.get("reasoning") or ""
+    return content
+
+
+# ── Groq ──────────────────────────────────────────────────────────────────────
+
+def _groq_complete(model, messages, system, max_tokens, temperature):
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError("pip install openai")
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise EnvironmentError("OPENAI_API_KEY not set")
+
+    client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+
+    full_messages = []
+    if system:
+        full_messages.append({"role": "system", "content": system})
+    full_messages.extend(messages)
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=full_messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content
+
+
+# ── OpenAI-compatible ─────────────────────────────────────────────────────────
+
+# Maps model prefix → (base_url, env_var_for_api_key)
+_OPENAI_COMPAT_PROVIDERS = {
+    "ollama/":  ("http://localhost:11434/v1", None),          # no key needed
+    "hf/":      ("https://api-inference.huggingface.co/v1", "HF_API_KEY"),
+    "openai/":  (None, "OPENAI_API_KEY"),                     # default OpenAI base
+}
+
+
+def _resolve_openai_provider(model: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Return (resolved_model_name, base_url, api_key)."""
+    for prefix, (base_url, key_var) in _OPENAI_COMPAT_PROVIDERS.items():
+        if model.startswith(prefix):
+            resolved = model[len(prefix):]
+            api_key = os.environ.get(key_var) if key_var else "ollama"
+            return resolved, base_url, api_key
+
+    # Bare OpenAI model names (gpt-*, o1-*, etc.) or unknown → use OPENAI_API_KEY
+    # and optionally OPENAI_BASE_URL for custom endpoints
+    base_url = os.environ.get("OPENAI_BASE_URL") or None
+    api_key = os.environ.get("OPENAI_API_KEY")
+    return model, base_url, api_key
+
+
+def _openai_complete(model, messages, system, max_tokens, temperature):
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError("pip install openai")
+
+    resolved_model, base_url, api_key = _resolve_openai_provider(model)
+
+    client_kwargs = {}
+    if api_key:
+        client_kwargs["api_key"] = api_key
+    if base_url:
+        client_kwargs["base_url"] = base_url
+
+    client = OpenAI(**client_kwargs)
+
+    # OpenAI-compatible providers use the system message inline
+    full_messages = []
+    if system:
+        full_messages.append({"role": "system", "content": system})
+    full_messages.extend(messages)
+
+    response = client.chat.completions.create(
+        model=resolved_model,
+        messages=full_messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content
