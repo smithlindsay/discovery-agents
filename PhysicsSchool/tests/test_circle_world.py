@@ -146,7 +146,7 @@ class TestCircleWorldMSE:
     which is the signal the discovery agent must learn to detect.
     """
 
-    def _run(self, ops, n_steps=100, dt=0.005):
+    def _run(self, ops, n_steps=200, dt=0.005):
         s = make_circle_sampler(ops=ops, dt=dt)
         for _ in range(n_steps):
             s.step()
@@ -155,15 +155,15 @@ class TestCircleWorldMSE:
     def test_fractional_differs_from_laplacian(self):
         """Fractional (alpha=0.75) and standard Laplacian should diverge noticeably.
 
-        500 steps × dt=0.005 = 2.5 time units gives mean displacement ~0.21 and
-        MSE ~0.038, well above the 1e-3 threshold.
+        1000 steps × dt=0.005 = 5.0 time units gives mean displacement ~0.21 and
+        MSE well above the 1e-3 threshold.
         """
         ops_frac = [{'type': 'fractional_laplacian',
                      'params': {'strength': 1.0, 'alpha': ALPHA}}]
         ops_lap  = [{'type': 'laplacian', 'params': {'strength': 1.0}}]
 
-        pos_true = self._run(ops_frac, n_steps=500)
-        pos_pred = self._run(ops_lap,  n_steps=500)
+        pos_true = self._run(ops_frac, n_steps=1000)
+        pos_pred = self._run(ops_lap,  n_steps=1000)
 
         mse = float(np.mean((pos_true - pos_pred)**2))
         assert mse > 1e-3, (
@@ -178,7 +178,7 @@ class TestCircleWorldMSE:
         ops_lap  = [{'type': 'laplacian', 'params': {'strength': 1.0}}]
 
         mse_values = []
-        for n_steps in [100, 200, 500]:
+        for n_steps in [200, 400, 1000]:
             pos_true = self._run(ops_frac, n_steps=n_steps)
             pos_pred = self._run(ops_lap,  n_steps=n_steps)
             mse_values.append(float(np.mean((pos_true - pos_pred)**2)))

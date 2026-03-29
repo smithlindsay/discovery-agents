@@ -32,13 +32,13 @@ All particles interact through an unknown field. You can control:
 - `initial_tangential_velocity`: initial CCW tangential speed for ring particles (typical range: 0–2)
 - `measurement_times`: times at which to record positions and velocities (up to 10 values, within `[0, duration]`)
 
-**Important:** Use `duration ≥ 5.0` and at least 10 measurement times to observe the force law clearly.
+**Important:** Use `duration ≥ 10.0` and at least 10 measurement times to observe the force law clearly.
 
 **Input Format:**
 <run_experiment>
 [
-  {"ring_radius": 5.0, "initial_tangential_velocity": 0.0, "measurement_times": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]},
-  {"ring_radius": 3.0, "initial_tangential_velocity": 0.0, "measurement_times": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]}
+  {"ring_radius": 5.0, "initial_tangential_velocity": 0.0, "measurement_times": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]},
+  {"ring_radius": 3.0, "initial_tangential_velocity": 0.0, "measurement_times": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]}
 ]
 </run_experiment>
 
@@ -46,7 +46,7 @@ All particles interact through an unknown field. You can control:
 <experiment_output>
 [
   {
-    "measurement_times": [0.5, 1.0, ...],
+    "measurement_times": [1.0, 2.0, ...],
     "positions":  [[[x0,y0],[x1,y1],...,[x10,y10]], ...],  // shape (T, 11, 2), relative to center
     "velocities": [[[vx0,vy0],[vx1,vy1],...], ...]          // shape (T, 11, 2)
   },

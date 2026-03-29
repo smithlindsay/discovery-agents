@@ -135,7 +135,7 @@ class Evaluator:
 _CIRCLE_TEST_CASES = [
     # Ring with tangential velocity — tests orbital / spiral dynamics
     {"ring_radius": 5.0, "initial_tangential_velocity": 0.3,
-     "measurement_times": [1.0, 2.0, 3.0, 4.0, 5.0]},
+     "measurement_times": [2.0, 4.0, 6.0, 8.0, 10.0]},
 ]
 
 
