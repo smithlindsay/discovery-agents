@@ -19,14 +19,25 @@ def main():
     parser.add_argument("--plot", default=None, help="Save trajectory comparison plot to this path (e.g. plot.png)")
     parser.add_argument("--store_output", default=None,
                         help="Base path for full run logs: writes <path>.json and <path>.txt")
+    parser.add_argument("--use-critic", action="store_true",
+                        help="Enable supervisor critic agent")
+    parser.add_argument("--critic-model", default="claude-haiku-4-5-20251001",
+                        help="Model for the critic agent (default: claude-haiku-4-5-20251001)")
     args = parser.parse_args()
 
     from scienceagent.worlds import get_world
     from scienceagent.agent import DiscoveryAgent
     from scienceagent.evaluator import Evaluator, CircleEvaluator, SpeciesEvaluator, clean_law_source
 
+    critic = None
+    if args.use_critic:
+        from scienceagent.critic import CriticAgent
+        critic = CriticAgent(model=args.critic_model)
+
     print(f"World : {args.world}")
     print(f"Model : {args.model}")
+    if critic:
+        print(f"Critic: {args.critic_model}")
     print()
 
     world = get_world(args.world)
@@ -45,6 +56,7 @@ def main():
         system_prompt_path=world["system_prompt"],
         law_stub=world["law_stub"],
         experiment_format=world["experiment_format"],
+        critic=critic,
     )
 
     law_source = agent.run()
@@ -149,6 +161,8 @@ def _write_run_txt(path, world, model, timestamp, agent, law_source, evaluation)
                           json.dumps(entry["experiment_output"], indent=2), ""]
             if entry.get("experiment_error"):
                 lines += ["[Experiment Error]", entry["experiment_error"], ""]
+            if entry.get("critic_feedback"):
+                lines += ["[Supervisor Feedback]", entry["critic_feedback"], ""]
         elif action == "final_law":
             lines += ["[Final Law Submitted]", entry.get("final_law", ""), ""]
         elif action in ("warning", "no_tag"):

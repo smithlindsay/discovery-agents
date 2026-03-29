@@ -70,6 +70,7 @@ class DiscoveryAgent:
         system_prompt_path: str = None,
         law_stub: str = None,
         experiment_format: str = None,
+        critic=None,
     ):
         self.model = model
         self.executor = executor
@@ -77,6 +78,7 @@ class DiscoveryAgent:
         self.max_tokens = max_tokens
         self.verbose = verbose
         self.show_experiment_output = show_experiment_output
+        self.critic = critic
         self._system_prompt_path = system_prompt_path or _SYSTEM_PROMPT_PATH
         self._law_stub = law_stub or _DEFAULT_LAW_STUB
         self._experiment_format = experiment_format or _DEFAULT_EXPERIMENT_FORMAT
@@ -115,6 +117,7 @@ class DiscoveryAgent:
                 "experiment_output": None, # parsed JSON list, or None
                 "experiment_error": None,
                 "final_law": None,
+                "critic_feedback": None,
             }
 
             # On the second-to-last round, warn the agent it must submit next round
@@ -220,8 +223,21 @@ class DiscoveryAgent:
             if self.verbose and self.show_experiment_output:
                 print(f"\n[Simulator]\n{output_content}")
 
-            self.conversation_log.append(round_entry)
             messages.append({"role": "user", "content": output_content})
+
+            # Critic feedback injection (skip round 1)
+            if self.critic and round_num >= 2 and round_entry["action"] == "experiment":
+                critic_feedback = self.critic.review(
+                    agent_system_prompt=self._system,
+                    messages=messages,
+                    round_num=round_num,
+                )
+                if self.verbose:
+                    print(f"\n[Supervisor feedback]\n{critic_feedback}")
+                messages.append({"role": "user", "content": f"Supervisor feedback:\n{critic_feedback}"})
+                round_entry["critic_feedback"] = critic_feedback
+
+            self.conversation_log.append(round_entry)
 
         if self.verbose:
             print(f"\n[Agent did not submit a final law within {MAX_ROUNDS} rounds]")
