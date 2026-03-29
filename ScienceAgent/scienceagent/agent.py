@@ -104,9 +104,9 @@ class DiscoveryAgent:
 
         for round_num in range(1, MAX_ROUNDS + 1):
             if self.verbose:
-                print(f"\n{'='*53}")
+                print(f"\n{'='*52}")
                 print(f"󰙨 󰧑  science agent experimenting at round {round_num}/{MAX_ROUNDS} 󰧑  󰙨")
-                print(f"{'='*53}")
+                print(f"{'='*52}")
 
             round_entry = {
                 "round": round_num,
