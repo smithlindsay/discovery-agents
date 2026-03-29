@@ -151,7 +151,7 @@ class DiscoveryAgent:
             round_entry["llm_reply"] = reply
 
             if self.verbose:
-                print(f"\n[LLM]\n{reply}")
+                print(f"\n[Science Agent]\n{reply}")
 
             messages.append({"role": "assistant", "content": reply})
 
@@ -233,7 +233,7 @@ class DiscoveryAgent:
                     round_num=round_num,
                 )
                 if self.verbose:
-                    print(f"\n[Supervisor feedback]\n{critic_feedback}")
+                    print(f"\n[Supervisor Agent]\n{critic_feedback}")
                 messages.append({"role": "user", "content": f"Supervisor feedback:\n{critic_feedback}"})
                 round_entry["critic_feedback"] = critic_feedback
 
