@@ -8,8 +8,9 @@ Runs as a separate single-turn LLM call after each experiment round
 
 from scienceagent import llm_client
 
+# likely these instructions are important, and for now I have not experimented with them much
 _CRITIC_SYSTEM_PROMPT = """\
-You are a supervisor reviewing a science agent's experimental process in a simulated physics universe.
+You are a physics expert and supervisor reviewing a science agent's experimental process in a simulated physics universe.
 
 You will be given:
 1. The RULES the science agent must follow (its system prompt)

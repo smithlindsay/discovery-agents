@@ -30,6 +30,8 @@ def main():
     from scienceagent.evaluator import Evaluator, CircleEvaluator, SpeciesEvaluator, clean_law_source
 
     critic = None
+    # the critic helps ensure the rules (how to run experiments) are followed
+    # it also provides input on if the past experiment was "useful"
     if args.use_critic:
         from scienceagent.critic import CriticAgent
         critic = CriticAgent(model=args.critic_model)
@@ -82,6 +84,7 @@ def main():
     results = evaluator.evaluate(law_source, verbose=True)
 
     if args.plot:
+        # will clean this up and refactor the plotting code soon
         base = args.plot
         plot_path = base + "_plot.png"
         law_path  = base + "_law.png"
@@ -184,7 +187,7 @@ def _write_run_txt(path, world, model, timestamp, agent, law_source, evaluation)
     with open(path, "w") as f:
         f.write("\n".join(lines))
 
-
+# plotting code to be refactored and located elsewhere in future
 def _plot_trajectories(trajectories, world, model, path):
     import matplotlib.pyplot as plt
     import matplotlib as mpl
@@ -265,6 +268,7 @@ def _plot_circle_trajectories(trajectories, world, model, path):
     print(f"Plot saved to {path}")
 
 
+# doesn't seems to work check later
 def _plot_species_trajectories(trajectories, world, model, path):
     """Plot 6-particle species world: species A (blue) and B (green) GT, single-color predictions."""
     import matplotlib.pyplot as plt

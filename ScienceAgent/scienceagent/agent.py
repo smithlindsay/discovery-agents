@@ -6,6 +6,8 @@ The agent follows the protocol defined in PhysicsSchool/prompts/run_experiments.
   - Receives results in <experiment_output>...</experiment_output> tags
   - Submits its discovered law in <final_law>...</final_law> tags
   - Maximum MAX_ROUNDS rounds before the loop is terminated
+
+Note, there is also a seperate supervisor/critic class to help keep the agent in line 
 """
 
 import json
@@ -15,17 +17,22 @@ from typing import Optional
 from scienceagent import llm_client
 from scienceagent.executor import SimulationExecutor
 
+# somewhat arbitrary for now, more round budget could help, however the experiments
+# must remain useful
 MAX_ROUNDS = 10
 MIN_ROUNDS = 2
 
+# always give the same default instructions to the agent
 _SYSTEM_PROMPT_PATH = "PhysicsSchool/prompts/run_experiments.md"
 
+# rough format of a "law"
 _DEFAULT_LAW_STUB = (
     "def discovered_law(pos1, pos2, p1, p2, velocity2, duration):\n"
     "    # your best implementation\n"
     "    return final_pos2, final_vel2\n"
 )
 
+# rough JSON style experiment action
 _DEFAULT_EXPERIMENT_FORMAT = (
     "<run_experiment>[{\"p1\": 1.0, \"p2\": 1.0, \"pos2\": [3.0, 0.0], "
     "\"velocity2\": [0.0, 0.0], \"measurement_times\": [0.5, 1.0, 2.0]}]</run_experiment>"
@@ -94,8 +101,6 @@ class DiscoveryAgent:
             The discovered law as a Python source string, or None if the agent
             did not submit a final law within MAX_ROUNDS.
 
-        Side-effect:
-            Populates self.conversation_log with one entry per round.
         """
         self.conversation_log = []
         messages = []
@@ -226,6 +231,7 @@ class DiscoveryAgent:
             messages.append({"role": "user", "content": output_content})
 
             # Critic feedback injection (skip round 1)
+            # this seems to help when the critic model is strong
             if self.critic and round_num >= 2 and round_entry["action"] == "experiment":
                 critic_feedback = self.critic.review(
                     agent_system_prompt=self._system,
@@ -249,8 +255,7 @@ class DiscoveryAgent:
             print(f"\n[Agent did not submit a final law within {MAX_ROUNDS} rounds]")
         return None
 
-    # ── Internal ──────────────────────────────────────────────────────────────
-
+    
     def _build_system_prompt(self) -> str:
         try:
             return _load_system_prompt(self._system_prompt_path)
@@ -260,8 +265,6 @@ class DiscoveryAgent:
                 "analyze results, and discover the underlying law of physics."
             )
 
-
-# ── Tag parsing ───────────────────────────────────────────────────────────────
 
 def _extract_tag(text: str, tag: str) -> Optional[str]:
     """Return the content between <tag>...</tag>, or None if not present."""

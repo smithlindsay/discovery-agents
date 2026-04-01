@@ -1,5 +1,5 @@
 """
-SimulationExecutor: bridges the experiment protocol to FieldSampler.
+SimulationExecutor: bridges the experiment protocol to FieldSampler in PhysicsSchool.
 
 Protocol mapping
 ----------------
@@ -26,7 +26,7 @@ if _repo_root not in sys.path:
 
 from physchool.worlds.field_sampler import FieldSampler
 
-
+# this is hardcoded for a 2-particle simple system
 class SimulationExecutor:
     """
     Runs experiments defined by the discovery protocol against a FieldSampler world.
@@ -53,7 +53,6 @@ class SimulationExecutor:
         self.domain_size = domain_size
         self.dt = dt
 
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self, experiments: list[dict]) -> list[dict]:
         """
@@ -76,7 +75,6 @@ class SimulationExecutor:
         results = self.run(experiments)
         return json.dumps(results, indent=2)
 
-    # ── Internal ──────────────────────────────────────────────────────────────
 
     def _run_one(self, exp: dict) -> dict:
         p1 = float(exp["p1"])
@@ -151,7 +149,7 @@ class SimulationExecutor:
             "velocity2": vel2_traj,
         }
 
-
+# hardcoded for 11 particle gravity system
 class CircleExecutor:
     """
     Runs 11-particle circle world experiments for the discovery agent.
@@ -266,7 +264,7 @@ class CircleExecutor:
             "velocities": vel_traj,  # (T, 11, 2)
         }
 
-
+# need to see whats going on here, something is not right
 class SpeciesExecutor:
     """
     Runs 6-particle species world experiments for the discovery agent.

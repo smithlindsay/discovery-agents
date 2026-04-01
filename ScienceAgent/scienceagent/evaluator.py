@@ -1,5 +1,6 @@
 """
 Evaluator: compares the agent's discovered_law against ground-truth trajectories.
+For now, just using raw MSE of the predicted vs PhysicsSchool particle paths
 """
 
 import numpy as np
@@ -130,8 +131,7 @@ class Evaluator:
         }
 
 
-# ── Circle world evaluator ────────────────────────────────────────────────────
-
+# seperate circle world for now as particle amounts are hard-coded into the evals
 _CIRCLE_TEST_CASES = [
     # Ring with tangential velocity — tests orbital / spiral dynamics
     {"ring_radius": 5.0, "initial_tangential_velocity": 0.3,
@@ -251,8 +251,7 @@ class CircleEvaluator:
         }
 
 
-# ── Species world evaluator ──────────────────────────────────────────────────
-
+# this is not working at all right now
 _SPECIES_TEST_CASES = [
     # Asymmetric layout: species differences should cause divergent trajectories
     {
@@ -358,9 +357,8 @@ class SpeciesEvaluator:
             "trajectories": trajectories,
         }
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
+# -----------------
+# utility functions
 def clean_law_source(source: str) -> str:
     """Strip markdown fences and prose before the first code line."""
     import re as _re

@@ -12,6 +12,7 @@ Provider routing is done by model string prefix:
   "hf/*"                → HuggingFace Inference, base_url=https://api-inference.huggingface.co/v1
                           (HF_API_KEY)
   Any other string      → OpenAI-compatible; set base_url via OPENAI_BASE_URL env var
+  Note: ollama seems to be very slow...
 """
 
 import os
@@ -52,14 +53,11 @@ def complete(
         return _openai_complete(model, messages, system, max_tokens, temperature)
 
 
-# ── Routing ──────────────────────────────────────────────────────────────────
-
 def _is_anthropic(model: str) -> bool:
     return model.startswith("claude")
 
-
-# ── Anthropic ─────────────────────────────────────────────────────────────────
-
+# ------------------
+# anthropic specific
 def _anthropic_complete(model, messages, system, max_tokens, temperature):
     try:
         import anthropic
@@ -83,9 +81,8 @@ def _anthropic_complete(model, messages, system, max_tokens, temperature):
     response = client.messages.create(**kwargs)
     return response.content[0].text
 
-
-# ── OpenRouter (direct requests, no OpenAI SDK) ───────────────────────────────
-
+# ----------
+# Openrouter
 def _openrouter_complete(model, messages, system, max_tokens, temperature):
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -115,9 +112,8 @@ def _openrouter_complete(model, messages, system, max_tokens, temperature):
     content = message.get("content") or message.get("reasoning") or ""
     return content
 
-
-# ── Groq ──────────────────────────────────────────────────────────────────────
-
+# ----
+# groq
 def _groq_complete(model, messages, system, max_tokens, temperature):
     try:
         from openai import OpenAI
@@ -144,9 +140,7 @@ def _groq_complete(model, messages, system, max_tokens, temperature):
     return response.choices[0].message.content
 
 
-# ── OpenAI-compatible ─────────────────────────────────────────────────────────
-
-# Maps model prefix → (base_url, env_var_for_api_key)
+# open ai, ollama is not working well, often hangs
 _OPENAI_COMPAT_PROVIDERS = {
     "ollama/":  ("http://localhost:11434/v1", None),          # no key needed
     "hf/":      ("https://api-inference.huggingface.co/v1", "HF_API_KEY"),
