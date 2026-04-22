@@ -53,7 +53,7 @@ You have full control over initial conditions:
 </experiment_output>
 
 Particle ordering is fixed across all experiments: particle 0 is always particle 0.
-All measurements are **noise-free**.
+Reported particle positions may contain **Gaussian observation noise of unknown scale**. Reported velocities are clean. Design your experiments and fit your law accordingly (e.g. by using longer durations or repeated measurements to average over noise).
 
 ## Strategy
 
@@ -92,5 +92,17 @@ def discovered_law(positions, velocities, duration):
 
 **Critical:**
 - Do NOT include explanation or commentary outside the function body inside the `<final_law>` block.
-- Only output the `<final_law>` block in your final answer.
+- In your final-submission round, output ONLY the `<final_law>` block followed by a single `<explanation>` block (described below). No other prose.
 - Always run at least 3 rounds of experiments before submitting.
+
+**Explanation Tag (required in the final submission round):**
+Alongside your `<final_law>`, you MUST also include a separate `<explanation>` tag containing a 2–3 sentence prose description of the physical system you discovered. Describe the underlying field equation, how particles couple to it, and any species or coupling differences you identified — in plain English, not code. This is graded independently from the trajectory accuracy.
+
+Example final-round response:
+<final_law>
+def discovered_law(positions, velocities, duration):
+    ...
+</final_law>
+<explanation>
+The six particles interact through a static Laplacian field with force minus the field gradient. They split into two hidden species: particles 0–2 source the field with coupling 1.0 while particles 3–5 source it with coupling 3.0, generating a field three times stronger.
+</explanation>

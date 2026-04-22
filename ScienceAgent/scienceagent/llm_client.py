@@ -6,6 +6,9 @@ Provider routing is done by model string prefix:
   "openrouter/*"        → OpenRouter API via requests (OPENROUTER_API_KEY)
   "groq/*"              → Groq API, model name passed as-is after stripping "groq/"
                           (OPENAI_API_KEY, base_url=https://api.groq.com/openai/v1)
+  "azure/gpt-5.4"      → Azure OpenAI, deployment gpt-5.4-samat
+  "azure/gpt-5.4-pro"  → Azure OpenAI, deployment gpt-5.4-pro-samat
+                          (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)
   "gpt-*", "o1-*"      → OpenAI SDK     (OPENAI_API_KEY)
   "openai/*"            → OpenAI SDK with default base_url
   "ollama/*"            → OpenAI-compatible, base_url=http://localhost:11434/v1
@@ -49,6 +52,8 @@ def complete(
         return _openrouter_complete(model[len("openrouter/"):], messages, system, max_tokens, temperature)
     elif model.startswith("groq/"):
         return _groq_complete(model[len("groq/"):], messages, system, max_tokens, temperature)
+    elif model.startswith("azure/"):
+        return _azure_complete(model[len("azure/"):], messages, system, max_tokens, temperature)
     else:
         return _openai_complete(model, messages, system, max_tokens, temperature)
 
@@ -58,6 +63,11 @@ def _is_anthropic(model: str) -> bool:
 
 # ------------------
 # anthropic specific
+
+# Models that do not accept the `temperature` parameter (e.g. opus-4-7+).
+_ANTHROPIC_NO_TEMPERATURE_PREFIXES = ("claude-opus-4-7",)
+
+
 def _anthropic_complete(model, messages, system, max_tokens, temperature):
     try:
         import anthropic
@@ -72,9 +82,10 @@ def _anthropic_complete(model, messages, system, max_tokens, temperature):
     kwargs = dict(
         model=model,
         max_tokens=max_tokens,
-        temperature=temperature,
         messages=messages,
     )
+    if not model.startswith(_ANTHROPIC_NO_TEMPERATURE_PREFIXES):
+        kwargs["temperature"] = temperature
     if system:
         kwargs["system"] = system
 
@@ -138,6 +149,58 @@ def _groq_complete(model, messages, system, max_tokens, temperature):
         temperature=temperature,
     )
     return response.choices[0].message.content
+
+
+# -------------
+# Azure OpenAI
+_AZURE_DEPLOYMENTS = {
+    "gpt-5.4": "gpt-5.4-samat",
+    "gpt-5.4-pro": "gpt-5.4-pro-samat",
+}
+
+# Reasoning models don't support temperature
+_AZURE_REASONING_MODELS = {"gpt-5.4-pro"}
+
+
+def _azure_complete(model, messages, system, max_tokens, temperature):
+    try:
+        from openai import AzureOpenAI
+    except ImportError:
+        raise ImportError("pip install openai  (>= 1.0)")
+
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    if not api_key:
+        raise EnvironmentError("AZURE_OPENAI_API_KEY not set")
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    if not endpoint:
+        raise EnvironmentError("AZURE_OPENAI_ENDPOINT not set")
+
+    deployment = _AZURE_DEPLOYMENTS.get(model)
+    if not deployment:
+        raise ValueError(
+            f"Unknown Azure model '{model}'. "
+            f"Available: {list(_AZURE_DEPLOYMENTS)}"
+        )
+
+    client = AzureOpenAI(
+        api_key=api_key,
+        azure_endpoint=endpoint,
+        api_version="2025-04-01-preview",
+    )
+
+    # Azure deployments use the Responses API
+    kwargs = dict(
+        model=deployment,
+        input=messages,
+        max_output_tokens=max_tokens,
+    )
+    if system:
+        kwargs["instructions"] = system
+    if model not in _AZURE_REASONING_MODELS:
+        kwargs["temperature"] = temperature
+
+    response = client.responses.create(**kwargs)
+    return response.output_text
 
 
 # open ai, ollama is not working well, often hangs

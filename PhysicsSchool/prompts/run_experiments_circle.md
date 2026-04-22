@@ -56,7 +56,7 @@ All particles interact through an unknown field. You can control:
 
 Positions are given relative to the domain center (particle 0 starts at [0,0]).
 Particle ordering is fixed: index 0 = center, indices 1–10 = ring particles in CCW order.
-All measurements are **noise-free**.
+Reported particle positions may contain **Gaussian observation noise of unknown scale**. Reported velocities are clean. Design your experiments and fit your law accordingly (e.g. by using longer durations or repeated measurements to average over noise).
 
 ## Strategy
 
@@ -72,28 +72,57 @@ Once confident, submit a single Python function in `<final_law>` tags.
 
 **Requirements:**
 1. Function name: `discovered_law`
-2. Signature: `def discovered_law(positions, velocities, duration)`
+2. Signature: `def discovered_law(positions, velocities, duration, **params)` — the `**params` catch-all lets the evaluator inject fitted values. Omit `**params` only if you have no fittable parameters.
    - `positions`: list of 11 `[x, y]` coords relative to center at `t=0`
    - `velocities`: list of 11 `[vx, vy]` at `t=0`
    - `duration`: float, time to simulate
 3. Return: a list or array of 11 `[x, y]` final positions at `t=duration`
-4. Define all constants as local variables inside the function body
-5. Import any required libraries inside the function body
+4. Constants you are CERTAIN about should be hard-coded inside the function body. Constants that remain UNCERTAIN (exponents, couplings) should be declared as *fittable parameters* via the optional `fit_parameters()` function below.
+5. Import any required libraries inside the function body.
+
+**Fittable Parameters (optional, recommended when you have uncertain constants):**
+Alongside `discovered_law`, you may define a second function `fit_parameters()` that returns a dict of free parameters the evaluator should fit with `scipy.optimize` on the training trajectories you already collected. Each entry must provide a sensible starting value (`init`) and physically plausible bounds (`bounds`). At most **5** free parameters are allowed.
+
+```
+def fit_parameters():
+    return {
+        "alpha": {"init": 0.75, "bounds": [0.2, 1.5]},
+        "G":     {"init": 1.0,  "bounds": [0.01, 10.0]},
+    }
+```
+
+Inside `discovered_law`, read fitted values from `**params` (e.g. `alpha = params.get("alpha", 0.75)`), defaulting to your best guess so the law still works if fitting is skipped. You are scored on whether you got the *functional form* right, not on pinning the constants by hand.
 
 **Submission format:**
 <final_law>
-def discovered_law(positions, velocities, duration):
+def discovered_law(positions, velocities, duration, **params):
     """
     Three-sentence docstring explaining the discovered physics.
     Include the key force law and any important constants.
     No other comments are allowed anywhere in the function body.
     """
     import numpy as np
+    alpha = params.get("alpha", 0.75)
     # your implementation
     return final_positions
+
+def fit_parameters():
+    return {"alpha": {"init": 0.75, "bounds": [0.2, 1.5]}}
 </final_law>
 
 **Critical:**
 - Do NOT include explanation or commentary outside the function body inside the `<final_law>` block.
-- Only output the `<final_law>` block in your final answer.
+- In your final-submission round, output ONLY the `<final_law>` block followed by a single `<explanation>` block (described below). No other prose.
 - Always run at least 3 rounds of experiments before submitting.
+
+**Explanation Tag (required in the final submission round):**
+Alongside your `<final_law>`, you MUST also include a separate `<explanation>` tag containing a 2–3 sentence prose description of the physical system you discovered. Describe the underlying field equation, how particles couple to it, and any structural features you identified — in plain English, not code. This is graded independently from the trajectory accuracy.
+
+Example final-round response:
+<final_law>
+def discovered_law(positions, velocities, duration):
+    ...
+</final_law>
+<explanation>
+The 11 particles interact through a static field governed by a non-local fractional Laplacian operator. The force on each particle is minus the gradient of the field, which is sourced by all particles with uniform coupling. The force-versus-distance law is intermediate between logarithmic 2D gravity and pure long-range behavior.
+</explanation>

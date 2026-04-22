@@ -6,13 +6,21 @@ CLI runner for a single physics-discovery episode.
 import argparse
 import json
 import os
+from pathlib import Path
+
+# Auto-load .env from project root if present
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env_path)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run a physics discovery episode.")
     parser.add_argument("--model", default="claude-opus-4-6", help="LLM model string")
     parser.add_argument("--world", default="gravity", help="World name (see worlds.py)")
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Max output tokens (default: 16384 for reasoning models, 4096 otherwise)")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-round output")
     parser.add_argument("--show-experiment-output", action="store_true", help="Print simulator experiment output each round")
     parser.add_argument("--output", default=None, help="Write results JSON to this file")
@@ -23,11 +31,41 @@ def main():
                         help="Enable supervisor critic agent")
     parser.add_argument("--critic-model", default="claude-haiku-4-5-20251001",
                         help="Model for the critic agent (default: claude-haiku-4-5-20251001)")
+    parser.add_argument("--noise-std", type=float, default=0.0,
+                        help="Std-dev of Gaussian observation noise added to particle "
+                             "positions returned to the agent (velocities and evaluator "
+                             "ground truth stay clean). 0.0 disables noise.")
+    parser.add_argument("--noise-seed", type=int, default=None,
+                        help="Optional RNG seed for reproducible noise.")
+    parser.add_argument("--max-rounds", type=int, default=None,
+                        help="Override the agent's max experimentation rounds "
+                             "(default: 10 as set in DiscoveryAgent).")
+    parser.add_argument("--random-experiments", action="store_true",
+                        help="Run in random-experiments mode: instead of the "
+                             "agent proposing experiments, one experiment per "
+                             "round is drawn uniformly from the documented "
+                             "parameter ranges and executed automatically. "
+                             "The agent only analyses the data. Uses the "
+                             "matching *_random.md system prompt for the world.")
+    parser.add_argument("--random-seed", type=int, default=None,
+                        help="RNG seed for the random-experiment sampler. "
+                             "If --random-experiments is set but this is "
+                             "omitted, falls back to --noise-seed (if any).")
     args = parser.parse_args()
 
     from scienceagent.worlds import get_world
     from scienceagent.agent import DiscoveryAgent
-    from scienceagent.evaluator import Evaluator, CircleEvaluator, SpeciesEvaluator, clean_law_source
+    from scienceagent.random_experiments import make_random_generator
+    from scienceagent.evaluator import (
+        Evaluator,
+        CircleEvaluator,
+        SpeciesEvaluator,
+        ThreeSpeciesEvaluator,
+        DarkMatterEvaluator,
+        ExplanationJudge,
+        _extract_training_trajectories,
+        clean_law_source,
+    )
 
     critic = None
     # the critic helps ensure the rules (how to run experiments) are followed
@@ -40,26 +78,66 @@ def main():
     print(f"Model : {args.model}")
     if critic:
         print(f"Critic: {args.critic_model}")
+    if args.noise_std > 0:
+        seed_str = f", seed={args.noise_seed}" if args.noise_seed is not None else ""
+        print(f"Noise : Gaussian σ={args.noise_std} on positions{seed_str}")
+    if args.random_experiments:
+        random_seed = args.random_seed if args.random_seed is not None else args.noise_seed
+        seed_str = f", seed={random_seed}" if random_seed is not None else ""
+        print(f"Mode  : random experiments (one per round{seed_str})")
     print()
 
-    world = get_world(args.world)
-    executor       = world["executor"]
-    mission        = world["mission"]
-    true_law       = world["true_law"]
-    true_law_title = world["true_law_title"]
+    world = get_world(args.world, noise_std=args.noise_std, noise_seed=args.noise_seed)
+    executor            = world["executor"]
+    mission             = world["mission"]
+    true_law            = world["true_law"]
+    true_law_title      = world["true_law_title"]
+    optimal_explanation = world.get("optimal_explanation", "")
+    explanation_rubric  = world.get("explanation_rubric", "")
+    system_prompt_path  = world["system_prompt"]
 
-    agent = DiscoveryAgent(
+    random_generator = None
+    if args.random_experiments:
+        random_seed = args.random_seed if args.random_seed is not None else args.noise_seed
+        random_generator = make_random_generator(args.world, seed=random_seed)
+        _RANDOM_PROMPT_OVERRIDES = {
+            "gravity":       "PhysicsSchool/prompts/run_experiments_random.md",
+            "yukawa":        "PhysicsSchool/prompts/run_experiments_random.md",
+            "fractional":    "PhysicsSchool/prompts/run_experiments_random.md",
+            "diffusion":     "PhysicsSchool/prompts/run_experiments_random.md",
+            "wave":          "PhysicsSchool/prompts/run_experiments_random.md",
+            "dark_matter":   "PhysicsSchool/prompts/run_experiments_dark_matter_random.md",
+            "three_species": "PhysicsSchool/prompts/run_experiments_three_species_random.md",
+        }
+        if args.world in _RANDOM_PROMPT_OVERRIDES:
+            system_prompt_path = _RANDOM_PROMPT_OVERRIDES[args.world]
+
+    # Reasoning models need more output tokens for chain-of-thought + XML tags
+    max_tokens = args.max_tokens
+    if max_tokens is None:
+        _reasoning_prefixes = ("azure/gpt-5.4-pro", "o1", "o3")
+        if any(args.model.startswith(p) for p in _reasoning_prefixes):
+            max_tokens = 16384
+        else:
+            max_tokens = 4096
+
+    agent_kwargs = dict(
         model=args.model,
         executor=executor,
         mission=mission,
-        max_tokens=args.max_tokens,
+        max_tokens=max_tokens,
         verbose=not args.quiet,
         show_experiment_output=args.show_experiment_output,
-        system_prompt_path=world["system_prompt"],
+        system_prompt_path=system_prompt_path,
         law_stub=world["law_stub"],
         experiment_format=world["experiment_format"],
         critic=critic,
+        random_experiments=args.random_experiments,
+        random_generator=random_generator,
     )
+    if args.max_rounds is not None:
+        agent_kwargs["max_rounds"] = args.max_rounds
+    agent = DiscoveryAgent(**agent_kwargs)
 
     law_source = agent.run()
 
@@ -79,9 +157,45 @@ def main():
         evaluator = CircleEvaluator(executor)
     elif args.world == "species":
         evaluator = SpeciesEvaluator(executor)
+    elif args.world == "three_species":
+        evaluator = ThreeSpeciesEvaluator(executor)
+    elif args.world == "dark_matter":
+        evaluator = DarkMatterEvaluator(executor)
     else:
         evaluator = Evaluator(executor)
-    results = evaluator.evaluate(law_source, verbose=True)
+
+    # Continuous-parameter worlds can fit free parameters declared by the
+    # agent's optional `fit_parameters()` function. Pass the training
+    # trajectories the agent collected during discovery as the fit set;
+    # structural worlds (species, three_species, dark_matter) skip this.
+    _FIT_WORLDS = {"gravity", "yukawa", "fractional", "diffusion", "wave", "circle"}
+    eval_kwargs = {"verbose": True}
+    if args.world in _FIT_WORLDS:
+        eval_kwargs["training_trajectories"] = _extract_training_trajectories(
+            agent.conversation_log
+        )
+    results = evaluator.evaluate(law_source, **eval_kwargs)
+
+    # Independent text-based metric: judge the agent's prose explanation
+    # against the world's ground-truth optimal_explanation.
+    print("\n" + "="*60)
+    print("Explanation evaluation:")
+    print("="*60)
+    print(f"Agent explanation: {agent.discovered_explanation or '(none submitted)'}")
+    print()
+    judge = ExplanationJudge(judge_model="claude-opus-4-6")
+    explanation_result = judge.score(
+        agent_explanation=agent.discovered_explanation,
+        optimal_explanation=optimal_explanation,
+        rubric=explanation_rubric,
+        verbose=True,
+    )
+    results["explanation"] = {
+        "agent_explanation": agent.discovered_explanation,
+        "optimal_explanation": optimal_explanation,
+        "judge_model": "claude-opus-4-6",
+        **explanation_result,
+    }
 
     if args.plot:
         # will clean this up and refactor the plotting code soon
@@ -94,12 +208,25 @@ def main():
         elif args.world == "species":
             _plot_species_trajectories(results["trajectories"], args.world, args.model, plot_path)
             _plot_law(clean_law_source(law_source), args.world, args.model, law_path)
+        elif args.world == "three_species":
+            _plot_three_species_trajectories(results["trajectories"], args.world, args.model, plot_path)
+            _plot_law(clean_law_source(law_source), args.world, args.model, law_path)
+        elif args.world == "dark_matter":
+            _plot_dark_matter_trajectories(results["trajectories"], args.world, args.model, plot_path)
+            _plot_law(clean_law_source(law_source), args.world, args.model, law_path)
         else:
             _plot_trajectories(results["trajectories"], args.world, args.model, plot_path)
             _plot_law(clean_law_source(law_source), args.world, args.model, law_path)
 
     if args.output:
-        out = {"world": args.world, "model": args.model, "law": law_source, "evaluation": results}
+        out = {
+            "world": args.world,
+            "model": args.model,
+            "noise_std": args.noise_std,
+            "noise_seed": args.noise_seed,
+            "law": law_source,
+            "evaluation": results,
+        }
         with open(args.output, "w") as f:
             json.dump(out, f, indent=2)
         print(f"\nResults written to {args.output}")
@@ -108,18 +235,24 @@ def main():
         import datetime
         timestamp = datetime.datetime.now().isoformat(timespec="seconds")
         _write_run_json(args.store_output + ".json", args.world, args.model, timestamp,
-                        agent, law_source, results)
+                        agent, law_source, results,
+                        noise_std=args.noise_std, noise_seed=args.noise_seed)
         _write_run_txt(args.store_output + ".txt",  args.world, args.model, timestamp,
-                       agent, law_source, results)
+                       agent, law_source, results,
+                       noise_std=args.noise_std, noise_seed=args.noise_seed)
         print(f"\nFull run log written to {args.store_output}.json / .txt")
 
 
-def _write_run_json(path, world, model, timestamp, agent, law_source, evaluation):
+def _write_run_json(path, world, model, timestamp, agent, law_source, evaluation,
+                    noise_std=0.0, noise_seed=None):
     """Write the full structured run log as JSON."""
     data = {
         "world": world,
         "model": model,
         "timestamp": timestamp,
+        "noise_std": noise_std,
+        "noise_seed": noise_seed,
+        "max_rounds": agent.max_rounds,
         "mission": agent.mission,
         "rounds": agent.conversation_log,
         "final_law": law_source,
@@ -129,11 +262,13 @@ def _write_run_json(path, world, model, timestamp, agent, law_source, evaluation
         json.dump(data, f, indent=2)
 
 
-def _write_run_txt(path, world, model, timestamp, agent, law_source, evaluation):
+def _write_run_txt(path, world, model, timestamp, agent, law_source, evaluation,
+                   noise_std=0.0, noise_seed=None):
     """Write the full run log as a human-readable plain-text file."""
     lines = []
     sep = "=" * 60
 
+    noise_line = f"σ={noise_std}" + (f", seed={noise_seed}" if noise_seed is not None else "")
     lines += [
         sep,
         "PHYSICS DISCOVERY RUN",
@@ -141,6 +276,7 @@ def _write_run_txt(path, world, model, timestamp, agent, law_source, evaluation)
         f"World     : {world}",
         f"Model     : {model}",
         f"Timestamp : {timestamp}",
+        f"Noise     : {noise_line}",
         f"Mission   : {agent.mission or '(none)'}",
         "",
     ]
@@ -182,6 +318,32 @@ def _write_run_txt(path, world, model, timestamp, agent, law_source, evaluation)
             f"  Max  position error : {evaluation.get('max_pos_error',  float('inf')):.4f}",
             f"  Result              : {'PASS' if evaluation.get('passed') else 'FAIL'}",
         ]
+        fit = evaluation.get("fit")
+        if fit:
+            lines += ["", "[Parameter Fit]"]
+            if fit.get("error"):
+                lines.append(f"  Error               : {fit['error']}")
+            if fit.get("declared_params") is not None:
+                lines.append(f"  Declared parameters : {json.dumps(fit['declared_params'])}")
+            if fit.get("fitted_params") is not None:
+                lines.append(f"  Fitted  parameters  : {json.dumps(fit['fitted_params'])}")
+            if fit.get("loss_before") is not None and fit.get("loss_after") is not None:
+                lines.append(
+                    f"  Training-set loss   : {fit['loss_before']:.4g} -> {fit['loss_after']:.4g}"
+                )
+        expl = evaluation.get("explanation")
+        if expl:
+            lines += ["", "[Explanation Metric]"]
+            lines.append(f"  Agent explanation   : {expl.get('agent_explanation') or '(none submitted)'}")
+            lines.append(f"  Optimal explanation : {expl.get('optimal_explanation') or '(none defined)'}")
+            score = expl.get("score")
+            raw   = expl.get("raw_score")
+            if score is None:
+                lines.append(f"  Explanation score   : N/A  ({expl.get('error') or 'unknown error'})")
+            else:
+                lines.append(f"  Explanation score   : {score:.2f}  (raw {raw}/10)")
+            if expl.get("reasoning"):
+                lines += ["  Judge reasoning     :", expl["reasoning"].strip()]
     lines.append("")
 
     with open(path, "w") as f:
@@ -327,6 +489,239 @@ def _plot_species_trajectories(trajectories, world, model, path):
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.legend(fontsize=8, loc="best")
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(direction="in", which="both", top=True, right=True)
+        ax.minorticks_on()
+
+    model_short = os.path.basename(model)
+    fig.suptitle(f"World: {world}  |  Model: {model_short}", fontsize=11, y=0.98)
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Plot saved to {path}")
+
+
+def _plot_dark_matter_trajectories(trajectories, world, model, path):
+    """Plot dark matter world: probe trajectories (true vs predicted) + field panel.
+
+    Top row:  Trajectory view — visible (faint blue context), dark matter initial
+              positions (black), true probe trajectories (gold), predicted probe
+              trajectories (orchid dashes). Error is computed on probes only.
+    Bottom:   Final field phi + final positions of visible (blue), dark matter
+              (black), true probes (gold), predicted probes (green).
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+    import numpy as np
+
+    mpl.rcParams["font.family"] = "serif"
+
+    n_cases = len(trajectories)
+    fig, axes = plt.subplots(2, n_cases, figsize=(7 * n_cases, 13), squeeze=False)
+    fig.subplots_adjust(left=0.06, right=0.95, top=0.93, bottom=0.04, wspace=0.30, hspace=0.22)
+
+    color_vis   = "#2166ac"   # blue  — visible background
+    color_probe = "#e6ab02"   # gold  — probes (ground truth)
+    color_dark  = "black"     # black — dark matter (revealed)
+    color_pred  = "orchid"    # orchid — predicted probes
+
+    # Simulation-internal indices (35-particle full output)
+    vis_sim   = list(range(0, 20))
+    dark_sim  = list(range(20, 30))
+    probe_sim = list(range(30, 35))
+
+    # Agent-facing indices in the 25-particle output / prediction
+    probe_agent = list(range(20, 25))
+
+    def _draw_arrows(ax, traj_data, indices, color, size, zorder):
+        """Draw arrowheads at trajectory endpoints."""
+        for i in indices:
+            if traj_data.shape[0] < 2:
+                continue
+            end = traj_data[-1, i]
+            prev = traj_data[-2, i]
+            d = end - prev
+            norm = np.linalg.norm(d)
+            if norm < 1e-10:
+                continue
+            d = d / norm
+            arrow_len = 0.8
+            tail = end - arrow_len * d
+            ax.annotate("", xy=end, xytext=tail,
+                        arrowprops=dict(arrowstyle="-|>", color=color,
+                                        lw=1.5, mutation_scale=size),
+                        zorder=zorder)
+
+    for idx, traj in enumerate(trajectories):
+        # ── Top panel: trajectory plot ──
+        ax = axes[0, idx]
+        gt_full = np.asarray(traj["gt_full"])   # (T, 35, 2)
+        pred = np.asarray(traj["pred"]) if traj["pred"] is not None else None
+
+        # Visible background trajectories
+        for i in vis_sim:
+            ax.plot(gt_full[:, i, 0], gt_full[:, i, 1], "-", color=color_vis,
+                    lw=0.6, alpha=0.4, label="Visible (s=1)" if i == vis_sim[0] else None, zorder=2)
+        # Visible start markers
+        ax.scatter(gt_full[0, vis_sim, 0], gt_full[0, vis_sim, 1],
+                   color=color_vis, s=20, zorder=6, marker="o",
+                   edgecolors="white", linewidths=0.3)
+        _draw_arrows(ax, gt_full, vis_sim, color_vis, 10, 6)
+
+        # Dark matter: initial position markers only
+        ax.scatter(gt_full[0, dark_sim, 0], gt_full[0, dark_sim, 1],
+                   color=color_dark, s=80, zorder=8, marker="o",
+                   edgecolors="white", linewidths=1.0, label="Dark matter (s=5)")
+
+        # True probe trajectories (gold, prominent)
+        for j, i in enumerate(probe_sim):
+            ax.plot(gt_full[:, i, 0], gt_full[:, i, 1], "-", color=color_probe,
+                    lw=1.8, alpha=0.9, label="True probes" if j == 0 else None, zorder=5)
+        # Start markers for probes
+        ax.scatter(gt_full[0, probe_sim, 0], gt_full[0, probe_sim, 1],
+                   color=color_probe, s=40, zorder=9, marker="D",
+                   edgecolors="white", linewidths=0.5)
+        _draw_arrows(ax, gt_full, probe_sim, color_probe, 14, 7)
+
+        # Predicted probe trajectories (orchid dashes)
+        if pred is not None:
+            pred = np.asarray(pred)  # (T, 25, 2)
+            for j, i in enumerate(probe_agent):
+                ax.plot(pred[:, i, 0], pred[:, i, 1], "--", color=color_pred,
+                        lw=1.4, alpha=0.8, label="Predicted probes" if j == 0 else None, zorder=4)
+            if pred.shape[0] >= 2:
+                _draw_arrows(ax, pred, probe_agent, color_pred, 12, 6)
+
+        ax.set_title(f"Case {traj['case']} probe trajectories  |  mean err = {traj['error']:.4f}", fontsize=10)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.legend(fontsize=7, loc="best", ncol=2)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(direction="in", which="both", top=True, right=True)
+        ax.minorticks_on()
+
+        # ── Bottom panel: field at final time + final positions ──
+        ax2 = axes[1, idx]
+        field_snaps = traj.get("field_snapshots")
+        if field_snaps and len(field_snaps) > 0:
+            field = np.asarray(field_snaps[-1])
+            domain = 50.0
+            centre = domain / 2.0
+            extent = [-centre, centre, -centre, centre]
+            im = ax2.imshow(field.T, origin="lower", extent=extent,
+                            cmap="RdBu_r", aspect="equal")
+            fig.colorbar(im, ax=ax2, shrink=0.7, label=r"$\varphi$")
+
+            # Final dark matter positions
+            ax2.scatter(gt_full[-1, dark_sim, 0], gt_full[-1, dark_sim, 1],
+                        color=color_dark, s=90, zorder=8, marker="o",
+                        edgecolors="white", linewidths=1.2, label="Dark matter")
+
+            # Final true visible positions (context)
+            ax2.scatter(gt_full[-1, vis_sim, 0], gt_full[-1, vis_sim, 1],
+                        color=color_vis, s=20, zorder=6, marker="o",
+                        edgecolors="white", linewidths=0.4, alpha=0.5, label="Visible")
+
+            # Final true probe positions
+            ax2.scatter(gt_full[-1, probe_sim, 0], gt_full[-1, probe_sim, 1],
+                        color=color_probe, s=50, zorder=9, marker="D",
+                        edgecolors="white", linewidths=0.6, label="True probes")
+
+            # Final predicted probe positions
+            if pred is not None:
+                pred_arr = np.asarray(pred)
+                pred_probes_final = pred_arr[-1, probe_agent]
+                ax2.scatter(pred_probes_final[:, 0], pred_probes_final[:, 1],
+                            color="#2ca02c", s=50, zorder=10, marker="D",
+                            edgecolors="white", linewidths=0.6, label="Predicted probes")
+
+            ax2.set_title(f"Case {traj['case']} final config " + r"$\varphi$" + f" at t={traj['times'][-1]:.1f}", fontsize=10)
+            ax2.set_xlabel("x")
+            ax2.set_ylabel("y")
+            ax2.legend(fontsize=7, loc="best")
+        else:
+            ax2.text(0.5, 0.5, "No field data", transform=ax2.transAxes,
+                     ha="center", va="center", fontsize=12, color="gray")
+            ax2.set_title(f"Case {traj['case']} field", fontsize=10)
+
+        ax2.tick_params(direction="in", which="both", top=True, right=True)
+        ax2.minorticks_on()
+
+    model_short = os.path.basename(model)
+    fig.suptitle(f"World: {world}  |  Model: {model_short}", fontsize=12, y=0.97)
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Plot saved to {path}")
+
+
+def _plot_three_species_trajectories(trajectories, world, model, path):
+    """Plot 35-particle three-species world: A (blue), B (green), C (red), probes (gold)."""
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+    import numpy as np
+
+    mpl.rcParams["font.family"] = "serif"
+
+    n_cases = len(trajectories)
+    fig, axes = plt.subplots(1, n_cases, figsize=(7 * n_cases, 7), squeeze=False)
+    fig.subplots_adjust(left=0.06, right=0.95, top=0.88, bottom=0.06, wspace=0.30)
+
+    color_a = "#2166ac"     # blue  — species A (source=+1)
+    color_b = "#1a9850"     # green — species B (source=+3)
+    color_c = "#d73027"     # red   — species C (source=-2)
+    color_probe = "#e6ab02" # gold  — probes (source=0)
+    color_pred = "orchid"
+
+    species_a = list(range(0, 10))
+    species_b = list(range(10, 20))
+    species_c = list(range(20, 30))
+    probes    = list(range(30, 35))
+
+    for idx, traj in enumerate(trajectories):
+        ax = axes[0, idx]
+        gt = np.asarray(traj["gt"])       # (T, 35, 2)
+        pred = np.asarray(traj["pred"]) if traj["pred"] is not None else None
+
+        # Ground truth trajectories by species
+        for i in species_a:
+            ax.plot(gt[:, i, 0], gt[:, i, 1], "-", color=color_a, lw=0.6, alpha=0.5,
+                    label="Species A (s=1)" if i == species_a[0] else None, zorder=2)
+        for i in species_b:
+            ax.plot(gt[:, i, 0], gt[:, i, 1], "-", color=color_b, lw=0.6, alpha=0.5,
+                    label="Species B (s=3)" if i == species_b[0] else None, zorder=2)
+        for i in species_c:
+            ax.plot(gt[:, i, 0], gt[:, i, 1], "-", color=color_c, lw=0.6, alpha=0.5,
+                    label="Species C (s=-2)" if i == species_c[0] else None, zorder=2)
+        for i in probes:
+            ax.plot(gt[:, i, 0], gt[:, i, 1], "-", color=color_probe, lw=1.4, alpha=0.9,
+                    label="Probes (s=0)" if i == probes[0] else None, zorder=3)
+
+        # Mark initial positions
+        for grp, c, m in [(species_a, color_a, "o"), (species_b, color_b, "s"),
+                          (species_c, color_c, "^"), (probes, color_probe, "D")]:
+            ax.scatter(gt[0, grp, 0], gt[0, grp, 1], color=c, s=25, zorder=7,
+                       marker=m, edgecolors="white", linewidths=0.4)
+
+        # Mark final GT positions
+        for grp, c, m in [(species_a, color_a, "o"), (species_b, color_b, "s"),
+                          (species_c, color_c, "^"), (probes, color_probe, "D")]:
+            ax.scatter(gt[-1, grp, 0], gt[-1, grp, 1], color=c, s=35, zorder=6,
+                       marker=m, edgecolors="black", linewidths=0.5)
+
+        # Predicted trajectories
+        if pred is not None:
+            pred = np.asarray(pred)
+            for i in range(pred.shape[1]):
+                ax.plot(pred[:, i, 0], pred[:, i, 1], "--", color=color_pred, lw=0.7,
+                        alpha=0.7, label="Predicted" if i == 0 else None, zorder=4)
+            ax.scatter(pred[-1, :, 0], pred[-1, :, 1],
+                       color=color_pred, s=30, zorder=5, marker="x", linewidths=1.0)
+
+        ax.set_title(f"Case {traj['case']}  |  mean err = {traj['error']:.4f}", fontsize=10)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.legend(fontsize=7, loc="best", ncol=2)
         ax.set_aspect("equal", adjustable="datalim")
         ax.grid(True, alpha=0.3)
         ax.tick_params(direction="in", which="both", top=True, right=True)

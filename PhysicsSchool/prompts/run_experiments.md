@@ -69,7 +69,7 @@ You must use the following JSON format for your requests and don't add any comme
 </run_experiment>
 
 """**How to Run Experiments:**
-To gather data, you must use the <run_experiment> tag. Provide a JSON array specifying the parameters for one or arbitrarily many experimental sets. Note that all measurements returned by the system are **noise-free**. You can assume the data is perfectly accurate and deterministic."""
+To gather data, you must use the <run_experiment> tag. Provide a JSON array specifying the parameters for one or arbitrarily many experimental sets. Note that **reported particle positions may contain Gaussian observation noise of unknown scale** — you should design experiments and fit your law accordingly (e.g. by using larger separations, longer durations, or repeated measurements to average over noise). Reported velocities are clean."""
 
 *System Response:*
 The system will return a list of the measured  positions and velocities at the desired times. Here is an example:
@@ -91,15 +91,52 @@ Once you are confident you have determined the underlying force law, submit your
 
 **Submission Requirements:**
 1. The function must be named `discovered_law`
-2. The function signature must be exactly: `def discovered_law(pos1, pos2, p1, p2, velocity2, duration)`
+2. The function signature must be exactly: `def discovered_law(pos1, pos2, p1, p2, velocity2, duration, **params)` — the `**params` catch-all lets the evaluator inject fitted parameter values. If you have no fittable parameters, you may omit `**params`.
 3. The function should return the position and velocity of the second particle.
 4. If you conclude that one of these parameters does not influence the final force, you should simply ignore that variable within your function's logic rather than changing the signature.
-5. If your law contains any constants, you must define the constant as a local variable inside the function body. Do NOT include the constant as a function argument.
-6. Import any necessary libraries inside the function body (e.g. math, numpy, etc.) if needed
+5. Constants that you are CERTAIN about (e.g. a dimensional prefactor you have nailed down) should be hard-coded inside the function body.
+6. Constants that remain UNCERTAIN — exponents, screening lengths, diffusion coefficients, wave speeds, couplings, etc. — should be declared as *fittable parameters* (see "Fittable Parameters" below). The evaluator will run `scipy.optimize` on the training trajectories you collected during discovery to pin them down, so you are scored on whether you got the *functional form* right, not the exact constants.
+7. Import any necessary libraries inside the function body (e.g. math, numpy, etc.) if needed.
+
+**Fittable Parameters (optional, recommended when you have uncertain constants):**
+Alongside `discovered_law`, you may define a second function `fit_parameters()` that returns a dict describing the free parameters the evaluator should fit. Each entry must provide a reasonable starting value (`init`) and physically plausible bounds (`bounds`) — the bounds are required and matter, because they define the search space. You may declare at most **5** free parameters; lean on `discovered_law` to hard-code anything you already know.
+
+```
+def fit_parameters():
+    return {
+        "alpha": {"init": 0.5, "bounds": [0.1, 1.5]},
+        "D":     {"init": 1.0, "bounds": [0.01, 10.0]},
+    }
+```
+
+Inside `discovered_law`, read fitted values from `**params` (e.g. `alpha = params.get("alpha", 0.5)`), defaulting to your best guess so the law still works if fitting is skipped.
 
 **Critical Boundaries:**
 - Do NOT include any explanation or commentary inside the <final_law> blocks and the function body.
-- Only output the <final_law> block in your final answer.
+- In your final-submission round, output ONLY the <final_law> block followed by a single <explanation> block (described below). No other prose.
+
+**Explanation Tag (required in the final submission round):**
+Alongside your <final_law>, you MUST also include a separate <explanation> tag containing a 2–3 sentence prose description of the physical system you discovered. Describe the underlying field equation, how particles couple to it, and any structural features you identified — in plain English, not code. This is graded independently from the trajectory accuracy.
+
+Example final-round response:
+<final_law>
+def discovered_law(pos1, pos2, p1, p2, velocity2, duration, **params):
+    """Fractional-Laplacian-like attractive field; α and G fit by evaluator."""
+    import numpy as np
+    alpha = params.get("alpha", 0.5)
+    G     = params.get("G", 1.0)
+    ...
+    return final_pos2, final_vel2
+
+def fit_parameters():
+    return {
+        "alpha": {"init": 0.5, "bounds": [0.1, 1.2]},
+        "G":     {"init": 1.0, "bounds": [0.01, 10.0]},
+    }
+</final_law>
+<explanation>
+The two particles interact through a static scalar field obeying a 2D Poisson-like equation. Particle 1 sources the field and particle 2 is accelerated by minus the field gradient divided by p2. The resulting attractive force decays approximately as 1/r.
+</explanation>
 
 **Reminder:**
 Always remember that the laws of physics in this universe may differ from those in our own, including factor dependency, constant scalars, and the form of the law. In the final law function, add a three sentence docstring explaining the physical motivation behind the discovered law, use new lines so that this docstring does not take up much horizontal space. No other comments are allowed anywhere in the function body.
